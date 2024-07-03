@@ -4,8 +4,9 @@ the HTML content of a specified URL. It supports optional proxy settings and med
 """
 
 from os import environ
+from urllib.parse import urlparse
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from playwright.async_api import Browser, async_playwright
 from pydantic import BaseModel
@@ -48,6 +49,11 @@ async def root(body: UrlModel):
     Returns:
         JSONResponse: The HTML content of the page.
     """
+
+    url_domain = urlparse(body.url).netloc
+    
+    if url_domain == "reddit.com" or url_domain.endswith(".reddit.com"):
+        return await handle_reddit_url(body)
     
     context = await browser.new_context()
 
@@ -82,3 +88,81 @@ async def root(body: UrlModel):
         "pageError": page_error
       }
     return JSONResponse(content=json_compatible_item_data)
+
+async def handle_reddit_url(body: UrlModel):
+    async with async_playwright() as playwright:
+        try:
+            chromium = playwright.chromium
+            browser = await chromium.connect_over_cdp(f"wss://connect.browserbase.com?apiKey={BROWSERBASE_API_KEY}&enableProxy=true")
+            
+            context = browser.contexts[0]
+            page = context.pages[0]
+            # Set headers if provided
+            if body.headers:
+                await page.set_extra_http_headers(body.headers)
+
+            response = await page.goto(
+                body.url,
+                wait_until="domcontentloaded",
+            )
+
+            await page.wait_for_selector('shreddit-comment[depth="0"]', timeout=10000)
+
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+
+            await page.wait_for_timeout(1000)
+
+            page_status_code = response.status
+            page_error = get_error(page_status_code)
+
+            reddit_data = await extract_reddit_data(page, body.url)
+
+            await context.close()
+            await page.close()
+            await browser.close()
+            json_compatible_item_data = {
+                "content": reddit_data,
+                "pageStatusCode": page_status_code,
+                "pageError": page_error
+            }
+            return JSONResponse(content=json_compatible_item_data)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+        
+async def extract_reddit_data(page, url):
+    # Extract comments
+    comments = await page.evaluate("""
+        () => {
+            const commentElements = document.querySelectorAll('shreddit-comment[depth="0"]');
+            return Array.from(commentElements).map((comment) => {
+                const author = comment.getAttribute("author");
+                const contentElement = comment.querySelector(".md");
+                const content = contentElement ? contentElement.textContent.trim() : "";
+                const score = comment.getAttribute("score");
+                return { author, content, score };
+            });
+        }
+    """)
+
+    # Extract title and body
+    post_data = await page.evaluate("""
+        () => {
+            const titleElement = document.querySelector('h1[slot="title"]');
+            const bodyElement = document.querySelector('div[slot="text-body"] .md');
+            return {
+                title: titleElement?.textContent?.trim() || "Title not found",
+                body: bodyElement?.textContent?.trim() || "No text body found",
+            };
+        }
+    """)
+
+    # Format the response as markdown with XML tags
+    markdown_response = f"<title>{post_data['title']}</title>\n\n<body>{post_data['body']}</body>\n\n## Top Comments\n\n"
+    
+    for comment in comments:
+        # If you want to include author and score, uncomment the following line:
+        # markdown_response += f"<comment>\n<author>{comment['author']}</author>\n<score>{comment['score']}</score>\n<content>{comment['content']}</content>\n</comment>\n\n"
+        markdown_response += f"<comment>{comment['content']}</comment>\n\n"
+
+    return markdown_response
+            
