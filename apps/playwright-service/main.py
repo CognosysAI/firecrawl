@@ -11,9 +11,7 @@ from playwright.async_api import Browser, async_playwright
 from pydantic import BaseModel
 from get_error import get_error
 
-PROXY_SERVER = environ.get("PROXY_SERVER", None)
-PROXY_USERNAME = environ.get("PROXY_USERNAME", None)
-PROXY_PASSWORD = environ.get("PROXY_PASSWORD", None)
+BROWSERBASE_API_KEY = environ.get("BROWSERBASE_API_KEY")
 BLOCK_MEDIA = environ.get("BLOCK_MEDIA", "False").upper() == "TRUE"
 
 app = FastAPI()
@@ -50,17 +48,8 @@ async def root(body: UrlModel):
     Returns:
         JSONResponse: The HTML content of the page.
     """
-    context = None
-    if PROXY_SERVER and PROXY_USERNAME and PROXY_PASSWORD:
-        context = await browser.new_context(
-            proxy={
-                "server": PROXY_SERVER,
-                "username": PROXY_USERNAME,
-                "password": PROXY_PASSWORD,
-            }
-        )
-    else:
-        context = await browser.new_context()
+    
+    context = await browser.new_context()
 
     if BLOCK_MEDIA:
         await context.route(
