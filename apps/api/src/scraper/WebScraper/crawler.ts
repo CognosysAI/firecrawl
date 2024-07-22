@@ -8,7 +8,6 @@ import { scrapSingleUrl } from "./single_url";
 import robotsParser from "robots-parser";
 import { getURLDepth } from "./utils/maxDepthUtils";
 import { axiosTimeout } from "../../../src/lib/timeout";
-import { scrapWithFireEngine } from "./scrapers/fireEngine";
 
 export class WebCrawler {
   private initialUrl: string;
@@ -459,7 +458,7 @@ export class WebCrawler {
     return linkDomain === baseDomain;
   }
 
-  private isFile(url: string): boolean {
+  public isFile(url: string): boolean {
     const fileExtensions = [
       ".png",
       ".jpg",
@@ -469,6 +468,7 @@ export class WebCrawler {
       ".js",
       ".ico",
       ".svg",
+      ".tiff",
       // ".pdf",
       ".zip",
       ".exe",

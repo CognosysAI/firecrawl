@@ -175,6 +175,7 @@ export const urlSpecificParams = {
   "firecrawl.dev":{
     defaultScraper: "fire-engine",
     params: {
+      engine: "playwright",
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -191,5 +192,15 @@ export const urlSpecificParams = {
   },
   "ir.veeva.com":{
     defaultScraper: "fire-engine",
+  },
+  "eonhealth.com":{
+    defaultScraper: "fire-engine",
+    params:{
+      fireEngineOptions:{
+        mobileProxy: true,
+        method: "get",
+        engine: "request",
+      },
+    },
   },
 };
