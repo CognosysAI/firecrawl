@@ -38,14 +38,28 @@ async def shutdown_event():
     """Event handler for application shutdown to close the browser."""
     await browser.close()
 
+@app.get("/health/liveness")
+def liveness_probe():
+    """Endpoint for liveness probe."""
+    return JSONResponse(content={"status": "ok"}, status_code=200)
+
+
+@app.get("/health/readiness")
+async def readiness_probe():
+    """Endpoint for readiness probe. Checks if the browser instance is ready."""
+    if browser:
+        return JSONResponse(content={"status": "ok"}, status_code=200)
+    return JSONResponse(content={"status": "Service Unavailable"}, status_code=503)
+
+
 @app.post("/html")
 async def root(body: UrlModel):
     """
     Endpoint to fetch and return HTML content of a given URL.
-    
+
     Args:
         body (UrlModel): The URL model containing the target URL, wait time, and timeout.
-    
+
     Returns:
         JSONResponse: The HTML content of the page.
     """
