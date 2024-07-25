@@ -19,8 +19,10 @@ import { generateCompletions } from "../../lib/LLM-extraction";
 import { getWebScraperQueue } from "../../../src/services/queue-service";
 import { fetchAndProcessDocx } from "./utils/docxProcessor";
 import { getAdjustedMaxDepth, getURLDepth } from "./utils/maxDepthUtils";
+import { Logger } from "../../lib/logger";
 
 export class WebScraperDataProvider {
+  private jobId: string;
   private bullJobId: string;
   private urls: string[] = [""];
   private mode: "single_urls" | "sitemap" | "crawl" = "single_urls";
@@ -65,6 +67,7 @@ export class WebScraperDataProvider {
         batchUrls.map(async (url, index) => {
           const existingHTML = allHtmls ? allHtmls[i + index] : "";
           const result = await scrapSingleUrl(
+            this.jobId,
             url,
             this.pageOptions,
             this.extractorOptions,
@@ -89,14 +92,14 @@ export class WebScraperDataProvider {
           const job = await getWebScraperQueue().getJob(this.bullJobId);
           const jobStatus = await job.getState();
           if (jobStatus === "failed") {
-            console.error(
+            Logger.info(
               "Job has failed or has been cancelled by the user. Stopping the job..."
             );
             return [] as Document[];
           }
         }
       } catch (error) {
-        console.error(error);
+        Logger.error(error.message);
         return [] as Document[];
       }
     }
@@ -164,8 +167,8 @@ export class WebScraperDataProvider {
   private async handleCrawlMode(
     inProgress?: (progress: Progress) => void
   ): Promise<Document[]> {
-
     const crawler = new WebCrawler({
+      jobId: this.jobId,
       initialUrl: this.urls[0],
       includes: this.includes,
       excludes: this.excludes,
@@ -225,7 +228,6 @@ export class WebScraperDataProvider {
       return this.returnOnlyUrlsResponse(links, inProgress);
     }
 
-
     let documents = await this.processLinks(links, inProgress);
     return this.cacheAndFinalizeDocuments(documents, links);
   }
@@ -253,35 +255,60 @@ export class WebScraperDataProvider {
     inProgress?: (progress: Progress) => void,
     allHtmls?: string[]
   ): Promise<Document[]> {
-    const pdfLinks = links.filter(link => link.endsWith(".pdf"));
-    const docLinks = links.filter(link => link.endsWith(".doc") || link.endsWith(".docx"));
-
-    const pdfDocuments = await this.fetchPdfDocuments(pdfLinks);
-    const docxDocuments = await this.fetchDocxDocuments(docLinks);
-
-    links = links.filter(link => !pdfLinks.includes(link) && !docLinks.includes(link));
-
-    let documents = await this.convertUrlsToDocuments(
-      links,
-      inProgress,
-      allHtmls
+    const pdfLinks = links.filter((link) => link.endsWith(".pdf"));
+    const docLinks = links.filter(
+      (link) => link.endsWith(".doc") || link.endsWith(".docx")
     );
 
-    documents = await this.getSitemapData(this.urls[0], documents);
+    const [pdfDocuments, docxDocuments] = await Promise.all([
+      this.fetchPdfDocuments(pdfLinks),
+      this.fetchDocxDocuments(docLinks),
+    ]);
+
+    links = links.filter(
+      (link) => !pdfLinks.includes(link) && !docLinks.includes(link)
+    );
+
+    let [documents, sitemapData] = await Promise.all([
+      this.convertUrlsToDocuments(links, inProgress, allHtmls),
+      this.mode === "single_urls" && links.length > 0
+        ? this.getSitemapDataForSingleUrl(this.urls[0], links[0], 1500).catch(
+            (error) => {
+              Logger.debug(`Failed to fetch sitemap data: ${error}`);
+              return null;
+            }
+          )
+        : Promise.resolve(null),
+    ]);
+
+    if (this.mode === "single_urls" && documents.length > 0) {
+      documents[0].metadata.sitemap = sitemapData ?? undefined;
+    } else {
+      documents = await this.getSitemapData(this.urls[0], documents);
+    }
+
     documents = this.applyPathReplacements(documents);
     // documents = await this.applyImgAltText(documents);
-
     if (
-      (this.extractorOptions.mode === "llm-extraction" || this.extractorOptions.mode === "llm-extraction-from-markdown") &&
+      (this.extractorOptions.mode === "llm-extraction" ||
+        this.extractorOptions.mode === "llm-extraction-from-markdown") &&
       this.mode === "single_urls"
     ) {
-      documents = await generateCompletions(documents, this.extractorOptions, "markdown");
+      documents = await generateCompletions(
+        documents,
+        this.extractorOptions,
+        "markdown"
+      );
     }
     if (
-      (this.extractorOptions.mode === "llm-extraction-from-raw-html") &&
+      this.extractorOptions.mode === "llm-extraction-from-raw-html" &&
       this.mode === "single_urls"
     ) {
-      documents = await generateCompletions(documents, this.extractorOptions, "raw-html");
+      documents = await generateCompletions(
+        documents,
+        this.extractorOptions,
+        "raw-html"
+      );
     }
     return documents.concat(pdfDocuments).concat(docxDocuments);
   }
@@ -289,7 +316,10 @@ export class WebScraperDataProvider {
   private async fetchPdfDocuments(pdfLinks: string[]): Promise<Document[]> {
     return Promise.all(
       pdfLinks.map(async (pdfLink) => {
-        const { content, pageStatusCode, pageError } = await fetchAndProcessPdf(pdfLink, this.pageOptions.parsePDF);
+        const { content, pageStatusCode, pageError } = await fetchAndProcessPdf(
+          pdfLink,
+          this.pageOptions.parsePDF
+        );
         return {
           content: content,
           metadata: { sourceURL: pdfLink, pageStatusCode, pageError },
@@ -301,7 +331,8 @@ export class WebScraperDataProvider {
   private async fetchDocxDocuments(docxLinks: string[]): Promise<Document[]> {
     return Promise.all(
       docxLinks.map(async (p) => {
-        const { content, pageStatusCode, pageError } = await fetchAndProcessDocx(p);
+        const { content, pageStatusCode, pageError } =
+          await fetchAndProcessDocx(p);
         return {
           content,
           metadata: { sourceURL: p, pageStatusCode, pageError },
@@ -328,7 +359,7 @@ export class WebScraperDataProvider {
     documents: Document[],
     links: string[]
   ): Promise<Document[]> {
-    await this.setCachedDocuments(documents, links);
+    // await this.setCachedDocuments(documents, links);
     documents = this.removeChildLinks(documents);
     return documents.splice(0, this.limit);
   }
@@ -424,7 +455,7 @@ export class WebScraperDataProvider {
           ...document,
           childrenLinks: childrenLinks || [],
         }),
-        60 * 60 * 24 * 10
+        60 * 60
       ); // 10 days
     }
   }
@@ -433,7 +464,7 @@ export class WebScraperDataProvider {
     let documents: Document[] = [];
     for (const url of urls) {
       const normalizedUrl = this.normalizeUrl(url);
-      console.log(
+      Logger.debug(
         "Getting cached document for web-scraper-cache:" + normalizedUrl
       );
       const cachedDocumentString = await getValue(
@@ -472,6 +503,7 @@ export class WebScraperDataProvider {
       throw new Error("Urls are required");
     }
 
+    this.jobId = options.jobId;
     this.bullJobId = options.bullJobId;
     this.urls = options.urls;
     this.mode = options.mode;
@@ -489,16 +521,21 @@ export class WebScraperDataProvider {
       includeHtml: false,
       replaceAllPathsWithAbsolutePaths: false,
       parsePDF: true,
-      removeTags: []
+      removeTags: [],
     };
-    this.extractorOptions = options.extractorOptions ?? {mode: "markdown"}
-    this.replaceAllPathsWithAbsolutePaths = options.crawlerOptions?.replaceAllPathsWithAbsolutePaths ?? options.pageOptions?.replaceAllPathsWithAbsolutePaths ?? false;
+    this.extractorOptions = options.extractorOptions ?? { mode: "markdown" };
+    this.replaceAllPathsWithAbsolutePaths =
+      options.crawlerOptions?.replaceAllPathsWithAbsolutePaths ??
+      options.pageOptions?.replaceAllPathsWithAbsolutePaths ??
+      false;
     //! @nicolas, for some reason this was being injected and breaking everything. Don't have time to find source of the issue so adding this check
     this.excludes = this.excludes.filter((item) => item !== "");
     this.crawlerMode = options.crawlerOptions?.mode ?? "default";
     this.ignoreSitemap = options.crawlerOptions?.ignoreSitemap ?? false;
-    this.allowBackwardCrawling = options.crawlerOptions?.allowBackwardCrawling ?? false;
-    this.allowExternalContentLinks = options.crawlerOptions?.allowExternalContentLinks ?? false;
+    this.allowBackwardCrawling =
+      options.crawlerOptions?.allowBackwardCrawling ?? false;
+    this.allowExternalContentLinks =
+      options.crawlerOptions?.allowExternalContentLinks ?? false;
 
     // make sure all urls start with https://
     this.urls = this.urls.map((url) => {
@@ -536,6 +573,34 @@ export class WebScraperDataProvider {
       }
     }
     return documents;
+  }
+  private async getSitemapDataForSingleUrl(
+    baseUrl: string,
+    url: string,
+    timeout?: number
+  ) {
+    const sitemapData = await fetchSitemapData(baseUrl, timeout);
+    if (sitemapData) {
+      const docInSitemapData = sitemapData.find(
+        (data) => this.normalizeUrl(data.loc) === this.normalizeUrl(url)
+      );
+      if (docInSitemapData) {
+        let sitemapDocData: Partial<SitemapEntry> = {};
+        if (docInSitemapData.changefreq) {
+          sitemapDocData.changefreq = docInSitemapData.changefreq;
+        }
+        if (docInSitemapData.priority) {
+          sitemapDocData.priority = Number(docInSitemapData.priority);
+        }
+        if (docInSitemapData.lastmod) {
+          sitemapDocData.lastmod = docInSitemapData.lastmod;
+        }
+        if (Object.keys(sitemapDocData).length !== 0) {
+          return sitemapDocData;
+        }
+      }
+    }
+    return null;
   }
   generatesImgAltText = async (documents: Document[]): Promise<Document[]> => {
     await Promise.all(

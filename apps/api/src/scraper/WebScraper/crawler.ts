@@ -8,8 +8,10 @@ import { scrapSingleUrl } from "./single_url";
 import robotsParser from "robots-parser";
 import { getURLDepth } from "./utils/maxDepthUtils";
 import { axiosTimeout } from "../../../src/lib/timeout";
+import { Logger } from "../../../src/lib/logger";
 
 export class WebCrawler {
+  private jobId: string;
   private initialUrl: string;
   private baseUrl: string;
   private includes: string[];
@@ -26,6 +28,7 @@ export class WebCrawler {
   private allowExternalContentLinks: boolean;
 
   constructor({
+    jobId,
     initialUrl,
     includes,
     excludes,
@@ -36,6 +39,7 @@ export class WebCrawler {
     allowBackwardCrawling = false,
     allowExternalContentLinks = false,
   }: {
+    jobId: string;
     initialUrl: string;
     includes?: string[];
     excludes?: string[];
@@ -46,6 +50,7 @@ export class WebCrawler {
     allowBackwardCrawling?: boolean;
     allowExternalContentLinks?: boolean;
   }) {
+    this.jobId = jobId;
     this.initialUrl = initialUrl;
     this.baseUrl = new URL(initialUrl).origin;
     this.includes = includes ?? [];
@@ -68,75 +73,69 @@ export class WebCrawler {
   ): string[] {
     return sitemapLinks
       .filter((link) => {
-        try {
-          const url = new URL(link);
-          const path = url.pathname;
+        const url = new URL(link.trim(), this.baseUrl);
+        const path = url.pathname;
 
-          const depth = getURLDepth(url.toString());
+        const depth = getURLDepth(url.toString());
 
-          // Check if the link exceeds the maximum depth allowed
-          if (depth > maxDepth) {
-            return false;
-          }
-
-          // Check if the link should be excluded
-          if (this.excludes.length > 0 && this.excludes[0] !== "") {
-            if (
-              this.excludes.some((excludePattern) =>
-                new RegExp(excludePattern).test(path)
-              )
-            ) {
-              return false;
-            }
-          }
-
-          // Check if the link matches the include patterns, if any are specified
-          if (this.includes.length > 0 && this.includes[0] !== "") {
-            if (
-              !this.includes.some((includePattern) =>
-                new RegExp(includePattern).test(path)
-              )
-            ) {
-              return false;
-            }
-          }
-
-          // Normalize the initial URL and the link to account for www and non-www versions
-          const normalizedInitialUrl = new URL(this.initialUrl);
-          const normalizedLink = new URL(link);
-          const initialHostname = normalizedInitialUrl.hostname.replace(
-            /^www\./,
-            ""
-          );
-          const linkHostname = normalizedLink.hostname.replace(/^www\./, "");
-
-          // Ensure the protocol and hostname match, and the path starts with the initial URL's path
-          // commented to able to handling external link on allowExternalContentLinks
-          // if (linkHostname !== initialHostname) {
-          //   return false;
-          // }
-
-          if (!this.allowBackwardCrawling) {
-            if (
-              !normalizedLink.pathname.startsWith(normalizedInitialUrl.pathname)
-            ) {
-              return false;
-            }
-          }
-
-          const isAllowed =
-            this.robots.isAllowed(link, "FireCrawlAgent") ?? true;
-          // Check if the link is disallowed by robots.txt
-          if (!isAllowed) {
-            console.log(`Link disallowed by robots.txt: ${link}`);
-            return false;
-          }
-
-          return true;
-        } catch (error) {
-          console.error(`Invalid URL: ${link}`, error);
+        // Check if the link exceeds the maximum depth allowed
+        if (depth > maxDepth) {
           return false;
         }
+
+        // Check if the link should be excluded
+        if (this.excludes.length > 0 && this.excludes[0] !== "") {
+          if (
+            this.excludes.some((excludePattern) =>
+              new RegExp(excludePattern).test(path)
+            )
+          ) {
+            return false;
+          }
+        }
+
+        // Check if the link matches the include patterns, if any are specified
+        if (this.includes.length > 0 && this.includes[0] !== "") {
+          if (
+            !this.includes.some((includePattern) =>
+              new RegExp(includePattern).test(path)
+            )
+          ) {
+            return false;
+          }
+        }
+
+        // Normalize the initial URL and the link to account for www and non-www versions
+        const normalizedInitialUrl = new URL(this.initialUrl);
+        const normalizedLink = new URL(link);
+        const initialHostname = normalizedInitialUrl.hostname.replace(
+          /^www\./,
+          ""
+        );
+        const linkHostname = normalizedLink.hostname.replace(/^www\./, "");
+
+        // Ensure the protocol and hostname match, and the path starts with the initial URL's path
+        // commented to able to handling external link on allowExternalContentLinks
+        // if (linkHostname !== initialHostname) {
+        //   return false;
+        // }
+
+        if (!this.allowBackwardCrawling) {
+          if (
+            !normalizedLink.pathname.startsWith(normalizedInitialUrl.pathname)
+          ) {
+            return false;
+          }
+        }
+
+        const isAllowed = this.robots.isAllowed(link, "FireCrawlAgent") ?? true;
+        // Check if the link is disallowed by robots.txt
+        if (!isAllowed) {
+          Logger.debug(`Link disallowed by robots.txt: ${link}`);
+          return false;
+        }
+
+        return true;
       })
       .slice(0, limit);
   }
@@ -149,17 +148,20 @@ export class WebCrawler {
     limit: number = 10000,
     maxDepth: number = 10
   ): Promise<{ url: string; html: string }[]> {
+    Logger.debug(`Crawler starting with ${this.initialUrl}`);
     // Fetch and parse robots.txt
     try {
       const response = await axios.get(this.robotsTxtUrl, {
         timeout: axiosTimeout,
       });
       this.robots = robotsParser(this.robotsTxtUrl, response.data);
+      Logger.debug(`Crawler robots.txt fetched with ${this.robotsTxtUrl}`);
     } catch (error) {
-      console.log(`Failed to fetch robots.txt from ${this.robotsTxtUrl}`);
+      Logger.debug(`Failed to fetch robots.txt from ${this.robotsTxtUrl}`);
     }
 
     if (!crawlerOptions?.ignoreSitemap) {
+      Logger.debug(`Fetching sitemap links from ${this.initialUrl}`);
       const sitemapLinks = await this.tryFetchSitemapLinks(this.initialUrl);
       if (sitemapLinks.length > 0) {
         let filteredLinks = this.filterLinks(sitemapLinks, limit, maxDepth);
@@ -201,6 +203,7 @@ export class WebCrawler {
     inProgress?: (progress: Progress) => void
   ): Promise<{ url: string; html: string }[]> {
     const queue = async.queue(async (task: string, callback) => {
+      Logger.debug(`Crawling ${task}`);
       if (this.crawledUrls.size >= Math.min(this.maxCrawledLinks, this.limit)) {
         if (callback && typeof callback === "function") {
           callback();
@@ -247,16 +250,18 @@ export class WebCrawler {
       }
     }, concurrencyLimit);
 
+    Logger.debug(`🐂 Pushing ${urls.length} URLs to the queue`);
     queue.push(
       urls.filter(
         (url) =>
           !this.visited.has(url) && this.robots.isAllowed(url, "FireCrawlAgent")
       ),
       (err) => {
-        if (err) console.error(err);
+        if (err) Logger.error(`🐂 Error pushing URLs to the queue: ${err}`);
       }
     );
     await queue.drain();
+    Logger.debug(`🐂 Crawled ${this.crawledUrls.size} URLs, Queue drained.`);
     return Array.from(this.crawledUrls.entries()).map(([url, html]) => ({
       url,
       html,
@@ -295,7 +300,7 @@ export class WebCrawler {
 
       // If it is the first link, fetch with single url
       if (this.visited.size === 1) {
-        const page = await scrapSingleUrl(url, {
+        const page = await scrapSingleUrl(this.jobId, url, {
           ...pageOptions,
           includeHtml: true,
         });
@@ -527,7 +532,7 @@ export class WebCrawler {
         sitemapLinks = await getLinksFromSitemap({ sitemapUrl });
       }
     } catch (error) {
-      console.error(
+      Logger.debug(
         `Failed to fetch sitemap with axios from ${sitemapUrl}: ${error}`
       );
       const response = await getLinksFromSitemap({
@@ -551,9 +556,13 @@ export class WebCrawler {
           });
         }
       } catch (error) {
-        console.error(
+        Logger.debug(
           `Failed to fetch sitemap from ${baseUrlSitemap}: ${error}`
         );
+        sitemapLinks = await getLinksFromSitemap({
+          sitemapUrl: baseUrlSitemap,
+          mode: "fire-engine",
+        });
       }
     }
 

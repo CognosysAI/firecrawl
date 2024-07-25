@@ -10,6 +10,7 @@ import { withAuth } from "../../src/lib/withAuth";
 import { RateLimiterRedis } from "rate-limiter-flexible";
 import { setTraceAttributes } from "@hyperdx/node-opentelemetry";
 import { sendNotification } from "../services/notification/email_notification";
+import { Logger } from "../lib/logger";
 
 export async function authenticateUser(
   req,
@@ -56,7 +57,7 @@ function setTrace(team_id: string, api_key: string) {
       api_key,
     });
   } catch (error) {
-    console.error("Error setting trace attributes:", error);
+    Logger.error(`Error setting trace attributes: ${error.message}`);
   }
 }
 export async function supaAuthenticateUser(
@@ -121,7 +122,7 @@ export async function supaAuthenticateUser(
     //   $$ language plpgsql;
 
     if (error) {
-      console.error("Error fetching key and price_id:", error);
+      Logger.warn(`Error fetching key and price_id: ${error.message}`);
     } else {
       // console.log('Key and Price ID:', data);
     }
@@ -187,7 +188,7 @@ export async function supaAuthenticateUser(
   try {
     await rateLimiter.consume(team_endpoint_token);
   } catch (rateLimiterRes) {
-    console.error(rateLimiterRes);
+    Logger.error(`Rate limit exceeded: ${rateLimiterRes}`);
     const secs = Math.round(rateLimiterRes.msBeforeNext / 1000) || 1;
     const retryDate = new Date(Date.now() + rateLimiterRes.msBeforeNext);
 
