@@ -36,7 +36,7 @@ export class ScrapeEvents {
   static async insert(jobId: string, content: ScrapeEvent) {
     if (jobId === "TEST") return null;
     
-    if (process.env.USE_DB_AUTHENTICATION) {
+    if (process.env.USE_DB_AUTHENTICATION === "true") {
       try {
         const result = await supabase.from("scrape_events").insert({
           job_id: jobId,
