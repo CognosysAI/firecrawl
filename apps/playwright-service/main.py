@@ -69,6 +69,17 @@ async def root(body: UrlModel):
     if url_domain == "reddit.com" or url_domain.endswith(".reddit.com"):
         return await handle_reddit_url(body)
     
+    # First attempt with regular browser
+    result = await fetch_with_regular_browser(body)
+    
+    # If status code is 403, try with Browserbase
+    if result["pageStatusCode"] == 403:
+        browserbase_result = await fetch_with_browserbase(body)
+        return JSONResponse(content=browserbase_result)
+    
+    return JSONResponse(content=result)
+
+async def fetch_with_regular_browser(body: UrlModel):
     context = await browser.new_context()
 
     if BLOCK_MEDIA:
@@ -90,18 +101,56 @@ async def root(body: UrlModel):
     )
     page_status_code = response.status
     page_error = get_error(page_status_code)
-    # Wait != timeout. Wait is the time to wait after the page is loaded - useful in some cases were "load" / "networkidle" is not enough
+    
     if body.wait_after_load > 0:
         await page.wait_for_timeout(body.wait_after_load)
 
     page_content = await page.content()
     await context.close()
-    json_compatible_item_data = {
+    
+    return {
         "content": page_content,
         "pageStatusCode": page_status_code,
         "pageError": page_error
-      }
-    return JSONResponse(content=json_compatible_item_data)
+    }
+
+async def fetch_with_browserbase(body: UrlModel):
+    async with async_playwright() as playwright:
+        try:
+            chromium = playwright.chromium
+            browser = await chromium.connect_over_cdp(f"wss://connect.browserbase.com?apiKey={BROWSERBASE_API_KEY}")
+            
+            context = browser.contexts[0]
+            page = context.pages[0]
+            
+            if body.headers:
+                await page.set_extra_http_headers(body.headers)
+
+            response = await page.goto(
+                body.url,
+                wait_until="load",
+                timeout=body.timeout,
+            )
+
+            page_status_code = response.status
+            page_error = get_error(page_status_code)
+
+            if body.wait_after_load > 0:
+                await page.wait_for_timeout(body.wait_after_load)
+
+            page_content = await page.content()
+
+            await context.close()
+            await page.close()
+            await browser.close()
+            
+            return {
+                "content": page_content,
+                "pageStatusCode": page_status_code,
+                "pageError": page_error
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"An error occurred with Browserbase: {str(e)}")
 
 async def handle_reddit_url(body: UrlModel):
     async with async_playwright() as playwright:
