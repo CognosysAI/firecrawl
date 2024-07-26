@@ -32,7 +32,7 @@ export class WebScraperDataProvider {
   private maxCrawledDepth: number = 10;
   private returnOnlyUrls: boolean;
   private limit: number = 10000;
-  private concurrentRequests: number = 20;
+  private concurrentRequests: number = 50;
   private generateImgAltText: boolean = false;
   private ignoreSitemap: boolean = false;
   private pageOptions?: PageOptions;
