@@ -19,6 +19,7 @@ import { scrapWithScrapingBee } from "./scrapers/scrapingBee";
 import { extractLinks } from "./utils/utils";
 import { Logger } from "../../lib/logger";
 import { ScrapeEvents } from "../../lib/scrape-events";
+import { clientSideError } from "../../strings";
 
 dotenv.config();
 
@@ -26,10 +27,10 @@ export const baseScrapers = [
   "fire-engine",
   "fire-engine;chrome-cdp",
   "scrapingBee",
-  "playwright",
+  process.env.USE_DB_AUTHENTICATION ? undefined : "playwright",
   "scrapingBeeLoad",
   "fetch",
-] as const;
+].filter(Boolean);
 
 export async function generateRequestParams(
   url: string,
@@ -87,19 +88,19 @@ function getScrapingFallbackOrder(
     "scrapingBee",
     "fire-engine",
     "fire-engine;chrome-cdp",
-    "playwright",
+    process.env.USE_DB_AUTHENTICATION ? undefined : "playwright",
     "scrapingBeeLoad",
     "fetch",
-  ];
+  ].filter(Boolean);
 
   if (isWaitPresent || isScreenshotPresent || isHeadersPresent) {
     defaultOrder = [
       "fire-engine",
-      "playwright",
+      process.env.USE_DB_AUTHENTICATION ? undefined : "playwright",
       ...defaultOrder.filter(
         (scraper) => scraper !== "fire-engine" && scraper !== "playwright"
       ),
-    ];
+    ].filter(Boolean);
   }
 
   const filteredDefaultOrder = defaultOrder.filter(
@@ -270,7 +271,7 @@ export async function scrapSingleUrl(
     const insertedLogId = await logInsertPromise;
     ScrapeEvents.updateScrapeResult(insertedLogId, {
       response_size: scraperResponse.text.length,
-      success: !scraperResponse.metadata.pageError && !!text,
+      success: !(scraperResponse.metadata.pageStatusCode && scraperResponse.metadata.pageStatusCode >= 400) && !!text && (text.trim().length >= 100),
       error: scraperResponse.metadata.pageError,
       response_code: scraperResponse.metadata.pageStatusCode,
       time_taken: Date.now() - timer,
@@ -311,7 +312,7 @@ export async function scrapSingleUrl(
 
     for (const scraper of scrapersInOrder) {
       // If exists text coming from crawler, use it
-      if (existingHtml && existingHtml.trim().length >= 100) {
+      if (existingHtml && existingHtml.trim().length >= 100 && !existingHtml.includes(clientSideError)) {
         let cleanedHtml = removeUnwantedElements(existingHtml, pageOptions);
         text = await parseMarkdown(cleanedHtml);
         html = cleanedHtml;
