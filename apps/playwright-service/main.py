@@ -4,6 +4,7 @@ the HTML content of a specified URL. It supports optional proxy settings and med
 """
 
 from os import environ
+import re
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
@@ -66,7 +67,9 @@ async def root(body: UrlModel):
 
     url_domain = urlparse(body.url).netloc
     
-    if url_domain == "reddit.com" or url_domain.endswith(".reddit.com"):
+    if url_domain in ["twitter.com", "x.com"]:
+        body.url = await transform_twitter_url(body.url)
+    elif url_domain == "reddit.com" or url_domain.endswith(".reddit.com"):
         return await handle_reddit_url(body)
     
     # First attempt with regular browser
@@ -78,6 +81,16 @@ async def root(body: UrlModel):
         return JSONResponse(content=browserbase_result)
     
     return JSONResponse(content=result)
+
+async def transform_twitter_url(url: str) -> str:
+    """Transform Twitter URL to the corresponding API endpoint."""
+    tweet_id_match = re.search(r'/status/(\d+)', url)
+    if not tweet_id_match:
+        raise HTTPException(status_code=400, detail="Invalid Twitter URL")
+    
+    tweet_id = tweet_id_match.group(1)
+    return f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&lang=en&features=tfw_timeline_list%3A%3Btfw_follower_count_sunset%3Atrue%3Btfw_tweet_edit_backend%3Aon%3Btfw_refsrc_session%3Aon%3Btfw_fosnr_soft_interventions_enabled%3Aon%3Btfw_show_birdwatch_pivots_enabled%3Aon%3Btfw_show_business_verified_badge%3Aon%3Btfw_duplicate_scribes_to_settings%3Aon%3Btfw_use_profile_image_shape_enabled%3Aon%3Btfw_show_blue_verified_badge%3Aon%3Btfw_legacy_timeline_sunset%3Atrue%3Btfw_show_gov_verified_badge%3Aon%3Btfw_show_business_affiliate_badge%3Aon%3Btfw_tweet_edit_frontend%3Aon&token=4c2mmul6mnh"
+
 
 async def fetch_with_regular_browser(body: UrlModel):
     context = await browser.new_context()
@@ -191,7 +204,7 @@ async def handle_reddit_url(body: UrlModel):
             return JSONResponse(content=json_compatible_item_data)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-        
+
 async def extract_reddit_data(page, url):
     # Extract comments
     comments = await page.evaluate("""
