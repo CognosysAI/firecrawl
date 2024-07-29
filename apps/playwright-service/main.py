@@ -72,6 +72,11 @@ async def root(body: UrlModel):
     elif url_domain == "reddit.com" or url_domain.endswith(".reddit.com"):
         return await handle_reddit_url(body)
     
+    if url_domain == "dnb.com" or url_domain.endswith(".dnb.com"):
+        browserbase_result = await fetch_with_browserbase(body)
+        return JSONResponse(content=browserbase_result)
+
+    
     # First attempt with regular browser
     result = await fetch_with_regular_browser(body)
     
@@ -144,6 +149,20 @@ async def fetch_with_browserbase(body: UrlModel):
                 wait_until="load",
                 timeout=body.timeout,
             )
+
+            # Check for challenge validation
+            title = await page.title()
+            if "dnb.com" in body.url and title == "Challenge Validation":
+                # Wait for the challenge to complete
+                try:
+                    await page.wait_for_function(
+                        """() => {
+                            return document.title !== "Challenge Validation";
+                        }""",
+                        timeout=30000
+                            )
+                except TimeoutError:
+                    print("Timeout waiting for challenge validation to complete")
 
             page_status_code = response.status
             page_error = get_error(page_status_code)
