@@ -490,8 +490,9 @@ export class WebCrawler {
       ".ttf",
       ".woff2",
       ".webp",
+      ".inc",
     ];
-    return fileExtensions.some((ext) => url.endsWith(ext));
+    return fileExtensions.some((ext) => url.toLowerCase().endsWith(ext));
   }
 
   private isSocialMediaOrEmail(url: string): boolean {

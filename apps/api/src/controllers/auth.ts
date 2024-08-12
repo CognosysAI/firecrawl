@@ -11,7 +11,15 @@ import { RateLimiterRedis } from "rate-limiter-flexible";
 import { setTraceAttributes } from "@hyperdx/node-opentelemetry";
 import { sendNotification } from "../services/notification/email_notification";
 import { Logger } from "../lib/logger";
+import { redlock } from "../../src/services/redlock";
+import { getValue } from "../../src/services/redis";
+import { setValue } from "../../src/services/redis";
+import { validate } from "uuid";
 
+function normalizedApiIsUuid(potentialUuid: string): boolean {
+  // Check if the string is a valid UUID
+  return validate(potentialUuid);
+}
 export async function authenticateUser(
   req,
   res,
@@ -60,6 +68,42 @@ function setTrace(team_id: string, api_key: string) {
     Logger.error(`Error setting trace attributes: ${error.message}`);
   }
 }
+
+async function getKeyAndPriceId(normalizedApi: string): Promise<{
+  success: boolean;
+  teamId?: string;
+  priceId?: string;
+  error?: string;
+  status?: number;
+}> {
+  const { data, error } = await supabase_service.rpc("get_key_and_price_id_2", {
+    api_key: normalizedApi,
+  });
+  if (error) {
+    Logger.error(`RPC ERROR (get_key_and_price_id_2): ${error.message}`);
+    return {
+      success: false,
+      error:
+        "The server seems overloaded. Please contact hello@firecrawl.com if you aren't sending too many requests at once.",
+      status: 500,
+    };
+  }
+  if (!data || data.length === 0) {
+    Logger.warn(`Error fetching api key: ${error.message} or data is empty`);
+    // TODO: change this error code ?
+    return {
+      success: false,
+      error: "Unauthorized: Invalid token",
+      status: 401,
+    };
+  } else {
+    return {
+      success: true,
+      teamId: data[0].team_id,
+      priceId: data[0].price_id,
+    };
+  }
+}
 export async function supaAuthenticateUser(
   req,
   res,
@@ -92,18 +136,80 @@ export async function supaAuthenticateUser(
   let subscriptionData: { team_id: string; plan: string } | null = null;
   let normalizedApi: string;
 
-  let team_id: string;
+  let cacheKey = "";
+  let redLockKey = "";
+  const lockTTL = 15000; // 10 seconds
+  let teamId: string | null = null;
+  let priceId: string | null = null;
 
   if (token == "this_is_just_a_preview_token") {
     rateLimiter = getRateLimiter(RateLimiterMode.Preview, token);
-    team_id = "preview";
+    teamId = "preview";
   } else {
     normalizedApi = parseApi(token);
+    if (!normalizedApiIsUuid(normalizedApi)) {
+      return {
+        success: false,
+        error: "Unauthorized: Invalid token",
+        status: 401,
+      };
+    }
 
-    const { data, error } = await supabase_service.rpc(
-      "get_key_and_price_id_2",
-      { api_key: normalizedApi }
-    );
+    cacheKey = `api_key:${normalizedApi}`;
+
+    try {
+      const teamIdPriceId = await getValue(cacheKey);
+      if (teamIdPriceId) {
+        const { team_id, price_id } = JSON.parse(teamIdPriceId);
+        teamId = team_id;
+        priceId = price_id;
+      } else {
+        const {
+          success,
+          teamId: tId,
+          priceId: pId,
+          error,
+          status,
+        } = await getKeyAndPriceId(normalizedApi);
+        if (!success) {
+          return { success, error, status };
+        }
+        teamId = tId;
+        priceId = pId;
+        await setValue(
+          cacheKey,
+          JSON.stringify({ team_id: teamId, price_id: priceId }),
+          10
+        );
+      }
+    } catch (error) {
+      Logger.error(`Error with auth function: ${error.message}`);
+      // const {
+      //   success,
+      //   teamId: tId,
+      //   priceId: pId,
+      //   error: e,
+      //   status,
+      // } = await getKeyAndPriceId(normalizedApi);
+      // if (!success) {
+      //   return { success, error: e, status };
+      // }
+      // teamId = tId;
+      // priceId = pId;
+      // const {
+      //   success,
+      //   teamId: tId,
+      //   priceId: pId,
+      //   error: e,
+      //   status,
+      // } = await getKeyAndPriceId(normalizedApi);
+      // if (!success) {
+      //   return { success, error: e, status };
+      // }
+      // teamId = tId;
+      // priceId = pId;
+    }
+
     // get_key_and_price_id_2 rpc definition:
     // create or replace function get_key_and_price_id_2(api_key uuid)
     //   returns table(key uuid, team_id uuid, price_id text) as $$
@@ -121,27 +227,11 @@ export async function supaAuthenticateUser(
     //   end;
     //   $$ language plpgsql;
 
-    if (error) {
-      Logger.warn(`Error fetching key and price_id: ${error.message}`);
-    } else {
-      // console.log('Key and Price ID:', data);
-    }
-
-    if (error || !data || data.length === 0) {
-      return {
-        success: false,
-        error: "Unauthorized: Invalid token",
-        status: 401,
-      };
-    }
-    const internal_team_id = data[0].team_id;
-    team_id = internal_team_id;
-
-    const plan = getPlanByPriceId(data[0].price_id);
+    const plan = getPlanByPriceId(priceId);
     // HyperDX Logging
-    setTrace(team_id, normalizedApi);
+    setTrace(teamId, normalizedApi);
     subscriptionData = {
-      team_id: team_id,
+      team_id: teamId,
       plan: plan,
     };
     switch (mode) {
@@ -183,7 +273,7 @@ export async function supaAuthenticateUser(
   }
 
   const team_endpoint_token =
-    token === "this_is_just_a_preview_token" ? iptoken : team_id;
+    token === "this_is_just_a_preview_token" ? iptoken : teamId;
 
   try {
     await rateLimiter.consume(team_endpoint_token);
@@ -196,7 +286,17 @@ export async function supaAuthenticateUser(
     const startDate = new Date();
     const endDate = new Date();
     endDate.setDate(endDate.getDate() + 7);
+
     // await sendNotification(team_id, NotificationType.RATE_LIMIT_REACHED, startDate.toISOString(), endDate.toISOString());
+    // Cache longer for 429s
+    if (teamId && priceId && mode !== RateLimiterMode.Preview) {
+      await setValue(
+        cacheKey,
+        JSON.stringify({ team_id: teamId, price_id: priceId }),
+        60 // 10 seconds, cache for everything
+      );
+    }
+
     return {
       success: false,
       error: `Rate limit exceeded. Consumed points: ${rateLimiterRes.consumedPoints}, Remaining points: ${rateLimiterRes.remainingPoints}. Upgrade your plan at https://firecrawl.dev/pricing for increased rate limits or please retry after ${secs}s, resets at ${retryDate}`,
@@ -233,6 +333,7 @@ export async function supaAuthenticateUser(
       .eq("key", normalizedApi);
 
     if (error || !data || data.length === 0) {
+      Logger.warn(`Error fetching api key: ${error.message} or data is empty`);
       return {
         success: false,
         error: "Unauthorized: Invalid token",
@@ -249,7 +350,6 @@ export async function supaAuthenticateUser(
     plan: subscriptionData.plan ?? "",
   };
 }
-
 function getPlanByPriceId(price_id: string) {
   switch (price_id) {
     case process.env.STRIPE_PRICE_ID_STARTER:
@@ -258,14 +358,14 @@ function getPlanByPriceId(price_id: string) {
       return "standard";
     case process.env.STRIPE_PRICE_ID_SCALE:
       return "scale";
-    case process.env.STRIPE_PRICE_ID_HOBBY ||
-      process.env.STRIPE_PRICE_ID_HOBBY_YEARLY:
+    case process.env.STRIPE_PRICE_ID_HOBBY:
+    case process.env.STRIPE_PRICE_ID_HOBBY_YEARLY:
       return "hobby";
-    case process.env.STRIPE_PRICE_ID_STANDARD_NEW ||
-      process.env.STRIPE_PRICE_ID_STANDARD_NEW_YEARLY:
+    case process.env.STRIPE_PRICE_ID_STANDARD_NEW:
+    case process.env.STRIPE_PRICE_ID_STANDARD_NEW_YEARLY:
       return "standardnew";
-    case process.env.STRIPE_PRICE_ID_GROWTH ||
-      process.env.STRIPE_PRICE_ID_GROWTH_YEARLY:
+    case process.env.STRIPE_PRICE_ID_GROWTH:
+    case process.env.STRIPE_PRICE_ID_GROWTH_YEARLY:
       return "growth";
     default:
       return "free";

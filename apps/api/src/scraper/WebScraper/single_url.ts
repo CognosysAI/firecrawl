@@ -85,9 +85,9 @@ function getScrapingFallbackOrder(
   });
 
   let defaultOrder = [
+    !process.env.USE_DB_AUTHENTICATION ? undefined : "fire-engine",
+    !process.env.USE_DB_AUTHENTICATION ? undefined : "fire-engine;chrome-cdp",
     "scrapingBee",
-    "fire-engine",
-    "fire-engine;chrome-cdp",
     process.env.USE_DB_AUTHENTICATION ? undefined : "playwright",
     "scrapingBeeLoad",
     "fetch",
@@ -128,6 +128,7 @@ export async function scrapSingleUrl(
     includeRawHtml: false,
     waitFor: 0,
     screenshot: false,
+    fullPageScreenshot: false,
     headers: undefined,
   },
   extractorOptions: ExtractorOptions = {
@@ -171,6 +172,7 @@ export async function scrapSingleUrl(
             url,
             waitFor: pageOptions.waitFor,
             screenshot: pageOptions.screenshot,
+            fullPageScreenshot: pageOptions.fullPageScreenshot,
             pageOptions: pageOptions,
             headers: pageOptions.headers,
             fireEngineOptions: {
@@ -306,7 +308,7 @@ export async function scrapSingleUrl(
     const scrapersInOrder = getScrapingFallbackOrder(
       defaultScraper,
       pageOptions && pageOptions.waitFor && pageOptions.waitFor > 0,
-      pageOptions && pageOptions.screenshot && pageOptions.screenshot === true,
+      pageOptions && (pageOptions.screenshot || pageOptions.fullPageScreenshot) && (pageOptions.screenshot === true || pageOptions.fullPageScreenshot === true),
       pageOptions && pageOptions.headers && pageOptions.headers !== undefined
     );
 

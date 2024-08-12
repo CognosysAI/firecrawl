@@ -12,10 +12,15 @@ import { Logger } from "../../../lib/logger";
 dotenv.config();
 
 export async function fetchAndProcessPdf(url: string, parsePDF: boolean): Promise<{ content: string, pageStatusCode?: number, pageError?: string }> {
-  const { tempFilePath, pageStatusCode, pageError } = await downloadPdf(url);
-  const content = await processPdfToText(tempFilePath, parsePDF);
-  fs.unlinkSync(tempFilePath); // Clean up the temporary file
-  return { content, pageStatusCode, pageError };
+  try {
+    const { tempFilePath, pageStatusCode, pageError } = await downloadPdf(url);
+    const content = await processPdfToText(tempFilePath, parsePDF);
+    fs.unlinkSync(tempFilePath); // Clean up the temporary file
+    return { content, pageStatusCode, pageError };
+  } catch (error) {
+    Logger.error(`Failed to fetch and process PDF: ${error.message}`);
+    return { content: "", pageStatusCode: 500, pageError: error.message };
+  }
 }
 
 async function downloadPdf(url: string): Promise<{ tempFilePath: string, pageStatusCode?: number, pageError?: string }> {
@@ -71,7 +76,6 @@ export async function processPdfToText(filePath: string, parsePDF: boolean): Pro
       let attempt = 0;
       const maxAttempts = 10; // Maximum number of attempts
       let resultAvailable = false;
-
       while (attempt < maxAttempts && !resultAvailable) {
         try {
           resultResponse = await axios.get(resultUrl, { headers, timeout: (axiosTimeout * 2) });
@@ -85,13 +89,22 @@ export async function processPdfToText(filePath: string, parsePDF: boolean): Pro
         } catch (error) {
           Logger.debug("Error fetching result w/ LlamaIndex");
           attempt++;
+          if (attempt >= maxAttempts) {
+            Logger.error("Max attempts reached, unable to fetch result.");
+            break; // Exit the loop if max attempts are reached
+          }
           await new Promise((resolve) => setTimeout(resolve, 500)); // Wait for 0.5 seconds before retrying
           // You may want to handle specific errors differently
         }
       }
 
       if (!resultAvailable) {
-        content = await processPdf(filePath);
+        try {
+          content = await processPdf(filePath);
+        } catch (error) {
+          Logger.error(`Failed to process PDF: ${error}`);
+          content = "";
+        }
       }
       content = resultResponse.data[resultType];
     } catch (error) {
@@ -99,15 +112,29 @@ export async function processPdfToText(filePath: string, parsePDF: boolean): Pro
       content = await processPdf(filePath);
     }
   } else if (parsePDF) {
-    content = await processPdf(filePath);
+    try {
+      content = await processPdf(filePath);
+    } catch (error) {
+      Logger.error(`Failed to process PDF: ${error}`);
+      content = "";
+    }
   } else {
-    content = fs.readFileSync(filePath, "utf-8");
+    try {
+      content = fs.readFileSync(filePath, "utf-8");
+    } catch (error) {
+      Logger.error(`Failed to read PDF file: ${error}`);
+      content = "";
+    }
   }
   return content;
 }
 
 async function processPdf(file: string) {
-  const fileContent = fs.readFileSync(file);
-  const data = await pdf(fileContent);
-  return data.text;
+  try {
+    const fileContent = fs.readFileSync(file);
+    const data = await pdf(fileContent);
+    return data.text;
+  } catch (error) {
+    throw error;
+  }
 }
