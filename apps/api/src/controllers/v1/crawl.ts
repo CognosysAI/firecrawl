@@ -60,8 +60,8 @@ export async function crawlController(
     }
   }
 
-  crawlerOptions.limit = Math.min(remainingCredits, crawlerOptions.limit);
-  
+  crawlerOptions.limit = Math.min(remainingCredits ?? 10, crawlerOptions.limit);
+
   const sc: StoredCrawl = {
     originUrl: req.body.url,
     crawlerOptions,
@@ -91,12 +91,16 @@ export async function crawlController(
 
   if (sitemap !== null && sitemap.length > 0) {
     let jobPriority = 20;
-      // If it is over 1000, we need to get the job priority,
-      // otherwise we can use the default priority of 20
-      if(sitemap.length > 1000){
-        // set base to 21
-        jobPriority = await getJobPriority({plan: req.auth.plan, team_id: req.auth.team_id, basePriority: 21})
-      }
+    // If it is over 1000, we need to get the job priority,
+    // otherwise we can use the default priority of 20
+    if (sitemap.length > 1000) {
+      // set base to 21
+      jobPriority = await getJobPriority({
+        plan: req.auth.plan,
+        team_id: req.auth.team_id,
+        basePriority: 21,
+      });
+    }
     const jobs = sitemap.map((x) => {
       const url = x.url;
       const uuid = uuidv4();
@@ -151,8 +155,15 @@ export async function crawlController(
     await addCrawlJob(id, job.id);
   }
 
-  if(req.body.webhook) {
-    await callWebhook(req.auth.team_id, id, null, req.body.webhook, true, "crawl.started");
+  if (req.body.webhook) {
+    await callWebhook(
+      req.auth.team_id,
+      id,
+      null,
+      req.body.webhook,
+      true,
+      "crawl.started"
+    );
   }
 
   return res.status(200).json({
@@ -161,5 +172,3 @@ export async function crawlController(
     url: `${req.protocol}://${req.get("host")}/v1/crawl/${id}`,
   });
 }
-
-
