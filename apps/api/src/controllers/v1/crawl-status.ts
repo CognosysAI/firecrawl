@@ -3,6 +3,8 @@ import { CrawlStatusParams, CrawlStatusResponse, ErrorResponse, legacyDocumentCo
 import { getCrawl, getCrawlExpiry, getCrawlJobs, getDoneJobsOrdered, getDoneJobsOrderedLength } from "../../lib/crawl-redis";
 import { getScrapeQueue } from "../../services/queue-service";
 import { supabaseGetJobById, supabaseGetJobsById } from "../../lib/supabase-jobs";
+import { configDotenv } from "dotenv";
+configDotenv();
 
 export async function getJob(id: string) {
   const job = await getScrapeQueue().getJob(id);
@@ -82,8 +84,8 @@ export async function crawlStatusController(req: RequestWithAuth<CrawlStatusPara
       }
     }
 
-    // if we ran over the bytes limit, remove the last document
-    if (bytes > bytesLimit) {
+    // if we ran over the bytes limit, remove the last document, except if it's the only document
+    if (bytes > bytesLimit && doneJobs.length !== 1) {
       doneJobs.splice(doneJobs.length - 1, 1);
     }
   } else {
@@ -92,7 +94,8 @@ export async function crawlStatusController(req: RequestWithAuth<CrawlStatusPara
 
   const data = doneJobs.map(x => x.returnvalue);
 
-  const nextURL = new URL(`${req.protocol}://${req.get("host")}/v1/crawl/${req.params.jobId}`);
+  const protocol = process.env.ENV === "local" ? req.protocol : "https";
+  const nextURL = new URL(`${protocol}://${req.get("host")}/v1/crawl/${req.params.jobId}`);
 
   nextURL.searchParams.set("skip", (start + data.length).toString());
 
@@ -111,6 +114,7 @@ export async function crawlStatusController(req: RequestWithAuth<CrawlStatusPara
   }
 
   res.status(200).json({
+    success: true,
     status,
     completed: doneJobsLength,
     total: jobIDs.length,
